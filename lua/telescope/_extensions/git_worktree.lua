@@ -11,14 +11,20 @@ local conf = require("telescope.config").values
 local git_worktree = require("git-worktree")
 
 local force_next_deletion = false
+local paths = {}
 
 local get_worktree_path = function(prompt_bufnr)
     local selection = action_state.get_selected_entry(prompt_bufnr)
     return selection.path
 end
 
+local function is_git_repo(dir)
+    return vim.fn.isdirectory(dir .. "/.git") == 1 or vim.fn.isdirectory(dir .. "/.bare") == 1
+end
+
 local switch_worktree = function(prompt_bufnr)
     local worktree_path = get_worktree_path(prompt_bufnr)
+    worktree_path = paths[worktree_path]
     actions.close(prompt_bufnr)
     if worktree_path ~= nil then
         git_worktree.switch_worktree(worktree_path)
@@ -76,15 +82,14 @@ local delete_worktree = function(prompt_bufnr)
     local worktree_path = get_worktree_path(prompt_bufnr)
     actions.close(prompt_bufnr)
     if worktree_path ~= nil then
-       git_worktree.delete_worktree(worktree_path, force_next_deletion, {
-           on_failure = delete_failure_handler,
-           on_success = delete_success_handler
-       })
+        git_worktree.delete_worktree(worktree_path, force_next_deletion, {
+            on_failure = delete_failure_handler,
+            on_success = delete_success_handler
+        })
     end
 end
 
 local create_input_prompt = function(cb)
-
     --[[
     local window = Window.centered({
         width = 30,
@@ -141,15 +146,33 @@ local create_worktree = function(opts)
     require("telescope.builtin").git_branches(opts)
 end
 
+local function get_git_directory_name()
+    local cwd = vim.uv.cwd()
+    local initial_cwd = cwd
+    local levels = 0
+
+    while cwd and cwd ~= "/" and levels < 5 do
+        if is_git_repo(cwd) then
+            return vim.fn.fnamemodify(cwd, ":t")
+        end
+        cwd = vim.fn.fnamemodify(cwd, ":h")
+        levels = levels + 1
+    end
+
+    return vim.fn.fnamemodify(initial_cwd, ":t")
+end
+
 local telescope_git_worktree = function(opts)
     opts = opts or {}
-    local output = utils.get_os_command_output({"git", "worktree", "list"})
+    local output = utils.get_os_command_output({ "git", "worktree", "list" })
     local results = {}
     local widths = {
         path = 0,
         sha = 0,
         branch = 0
     }
+
+    paths = {}
 
     local parse_line = function(line)
         local fields = vim.split(string.gsub(line, "%s+", " "), " ")
@@ -179,6 +202,7 @@ local telescope_git_worktree = function(opts)
         parse_line(line)
     end
 
+
     if #results == 0 then
         return
     end
@@ -192,10 +216,27 @@ local telescope_git_worktree = function(opts)
         },
     }
 
+    local function escape_pattern(text)
+        return text:gsub("([^%w])", "%%%1")
+    end
+
     local make_display = function(entry)
+        local target_folder = get_git_directory_name()
+        local index = string.find(entry.path, escape_pattern(target_folder))
+
+        local real_path = entry.path
+
+        if index then
+            entry.path = string.sub(entry.path, index)
+        end
+
+        if not paths[entry.path] then
+            paths[entry.path] = real_path
+        end
+
         return displayer {
             { entry.branch, "TelescopeResultsIdentifier" },
-            { utils.transform_path(opts, entry.path) },
+            { "" },
             { entry.sha },
         }
     end
@@ -226,7 +267,7 @@ local telescope_git_worktree = function(opts)
 end
 
 return require("telescope").register_extension(
-           {
+    {
         exports = {
             git_worktree = telescope_git_worktree,
             git_worktrees = telescope_git_worktree,
